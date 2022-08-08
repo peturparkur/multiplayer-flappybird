@@ -23,3 +23,12 @@ The way the games are being created is a client can connect to the an endpoint s
 (NOTE: this should be changed for production as we don't want clients to spam create new lobbies).
 
 Once within the lobby a game instance is created for the lobby and the user can either just spectate (not sending input), or create a character and ready up (send `!ready` after an input was sent). Currently input is a simple boolean `true`/`false` which will set the jump-state of the [bird](./src/game/objects/bird.rs) to the given value
+
+# Commands
+
+## Running the server
+A quick server instance can be started via `cargo`.
+```
+cargo run --release
+```
+
