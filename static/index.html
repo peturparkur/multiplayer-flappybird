@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Websocket Chat Broker</title>
+
+    <style>
+      :root {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        font-size: 18px;
+      }
+
+      input[type='text'] {
+        font-size: inherit;
+      }
+
+      #log {
+        width: 30em;
+        height: 20em;
+        overflow: auto;
+        margin: 0.5em 0;
+
+        border: 1px solid black;
+      }
+
+      #status {
+        padding: 0 0.2em;
+      }
+
+      #text {
+        width: 17em;
+        padding: 0.5em;
+      }
+
+      .msg {
+        margin: 0;
+        padding: 0.25em 0.5em;
+      }
+
+      .msg--status {
+        /* a light yellow */
+        background-color: #ffffc9;
+      }
+
+      .msg--message {
+        /* a light blue */
+        background-color: #d2f4ff;
+      }
+
+      .msg--error {
+        background-color: pink;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Chat!</h1>
+
+    <div>
+      <button id="connect">Connect</button>
+      <span>Status:</span>
+      <span id="status">disconnected</span>
+    </div>
+
+    <div id="log"></div>
+
+    <form id="chatform">
+      <input type="text" id="text" />
+      <input type="submit" id="send" />
+    </form>
+
+    <hr />
+
+    <section>
+      <h2>Commands</h2>
+      <table style="border-spacing: 0.5em;">
+        <tr>
+          <td>
+            <code>/list</code>
+          </td>
+          <td>
+            list all available rooms
+          </td>
+        </tr>
+        <tr>
+          <td>
+            <code>/join name</code>
+          </td>
+          <td>
+            join room, if room does not exist, create new one
+          </td>
+        </tr>
+        <tr>
+          <td>
+            <code>/name name</code>
+          </td>
+          <td>
+            set session name
+          </td>
+        </tr>
+        <tr>
+          <td>
+            <code>some message</code>
+          </td>
+          <td>
+            just string, send message to all peers in same room
+          </td>
+        </tr>
+      </table>
+    </section>
+
+    <h1>Canvas!</h1>
+    <div>
+        <canvas id="canvas" width="500" height="500" style="border: 1px solid #000000;"></canvas>
+    </div>
+
+    <script>
+      const $status = document.querySelector('#status')
+      const $connectButton = document.querySelector('#connect')
+      const $log = document.querySelector('#log')
+      const $form = document.querySelector('#chatform')
+      const $input = document.querySelector('#text')
+
+      /** @type {WebSocket | null} */
+      var socket = null
+
+      function log(msg, type = 'status') {
+        $log.innerHTML += `<p class="msg msg--${type}">${msg}</p>`
+        $log.scrollTop += 1000
+      }
+
+      class Bird {
+        constructor(owner, x, y, vel_x, vel_y, radius, color) {
+          this.owner = owner
+          this.x = x
+          this.y = y
+          this.vel_x = vel_x
+          this.vel_y = vel_y
+          this.radius = radius
+          this.color = color
+        }
+
+        draw(ctx, canvas) {
+            // console.log(`Drawing Birb[${this.x}, ${this.y}]`)
+          ctx.beginPath()
+          ctx.arc(this.x * canvas.width, this.y * canvas.height, this.radius * canvas.width, 0, 2 * Math.PI)
+          ctx.fillStyle = this.color
+          ctx.fill()
+        }
+      }
+
+      class Wall {
+        constructor(x, y, vel_x, vel_y, width, height, color) {
+          this.x = x
+          this.y = y
+          this.vel_x = vel_x
+          this.vel_y = vel_y
+          this.width = width
+          this.height = height
+          this.color = color
+        }
+
+        draw(ctx, canvas) {
+          ctx.beginPath()
+          ctx.rect((this.x - 0.5*this.width) * canvas.width, (this.y - 0.5*this.height) * canvas.height, this.width * canvas.width, this.height * canvas.height)
+          ctx.fillStyle = this.color
+          ctx.fill()
+        }
+      }
+
+      class Game {
+        constructor(running, birds, walls, score) {
+          this.running = running
+          this.birds = birds
+          this.walls = walls
+          this.score = score
+        }
+
+        parse(data){
+            this.running = data.running
+            this.birds = Object.keys(data.birds).map(key => {
+                let bird = data.birds[key];
+                return new Bird(key, bird.position[0], 1 - bird.position[1], bird.velocity[0], bird.velocity[1], bird.radius, "#f50505");
+            })
+            // this.birds?.forEach((x) => {
+            //     // console.log(`Birb: ${x.x}, ${x.y}`);
+            // })
+            this.walls = data.walls.map((x) => {
+                return new Wall(x.position[0], 1 - x.position[1], x.velocity[0], x.velocity[1], x.width, x.height, "#006600")
+            })
+            // this.walls.forEach((x) => {
+            //     x.x = (x.x / 50) + 200;
+            //     x.y = (x.y + 1000) / 50;
+            //     x.width = x.width;
+            //     x.height = x.height;
+            // })
+        }
+
+        draw(ctx, canvas) {
+            this.birds.forEach((bird) => {
+                bird.draw(ctx, canvas);
+            });
+            this.walls.forEach((wall) => {
+                wall.draw(ctx, canvas);
+            });
+        }
+      }
+
+      function clear_canvas(ctx, _cvs){
+        ctx.clearRect(0, 0, _cvs.width, _cvs.height);
+      }
+
+      function connect() {
+        disconnect()
+
+        const { location } = window
+        location.protocol.trimEnd();
+        const proto = location.protocol.startsWith('https') ? 'wss' : 'ws'
+        const wsUri = `${proto}://${location.host}/0` // url to join
+
+        log('Connecting...')
+        socket = new WebSocket(wsUri)
+
+        let canvas = document.getElementById("canvas");
+        let ctx = canvas.getContext("2d");
+        // ctx.beginPath();
+        // ctx.arc(250, 250, 50, 0, 2 * Math.PI);
+        // ctx.fill();
+
+        game = new Game(false, [], [], 0)
+
+        socket.onopen = () => {
+          log('Connected')
+          updateConnectionStatus()
+        }
+
+        socket.onmessage = (ev) => {
+        //   log('Received: ' + ev.data, 'message')
+        let _data = null;
+        try {
+            _data = JSON.parse(ev.data)
+        } catch (error) {
+            console.log(`ERROR[${error}] => ${ev.data}`);
+        }
+          game.parse(_data);
+        //   console.log(game);
+          clear_canvas(ctx, canvas);
+          game.draw(ctx, canvas);
+        //   console.log("---------")
+        }
+
+        socket.onclose = () => {
+          log('Disconnected')
+          socket = null
+          updateConnectionStatus()
+        }
+      }
+
+      function disconnect() {
+        if (socket) {
+          log('Disconnecting...')
+          socket.close()
+          socket = null
+
+          updateConnectionStatus()
+        }
+      }
+
+      function updateConnectionStatus() {
+        if (socket) {
+          $status.style.backgroundColor = 'transparent'
+          $status.style.color = 'green'
+          $status.textContent = `connected`
+          $connectButton.innerHTML = 'Disconnect'
+          $input.focus()
+        } else {
+          $status.style.backgroundColor = 'red'
+          $status.style.color = 'white'
+          $status.textContent = 'disconnected'
+          $connectButton.textContent = 'Connect'
+        }
+      }
+
+      $connectButton.addEventListener('click', () => {
+        if (socket) {
+          disconnect()
+        } else {
+          connect()
+        }
+
+        updateConnectionStatus()
+      })
+
+      $form.addEventListener('submit', (ev) => {
+        ev.preventDefault()
+
+        const text = $input.value
+
+        // log('Sending: ' + text)
+        socket.send(text)
+
+        // $input.value = ''
+        $input.focus()
+      })
+
+      updateConnectionStatus()
+    </script>
+  </body>
+</html>
