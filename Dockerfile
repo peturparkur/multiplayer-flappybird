@@ -37,5 +37,6 @@ ARG TMP_NAME
 # ENV SSL_CERT_DIR=/etc/ssl/certs
 
 COPY --from=builder /${TMP_NAME}/target/release/${BINARY_NAME} .
+COPY ./static ./static
 
 CMD ["./websocket-game"]
